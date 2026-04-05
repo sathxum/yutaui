@@ -1,0 +1,88 @@
+name: Nexus RDP Deployment
+on: 
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/nexus-rdp.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+      
+    - name: Setup Environment
+      run: |
+        Write-Host "╔════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║     NEXUS RDP DEPLOYMENT v2.3      ║" -ForegroundColor Cyan
+        Write-Host "╚════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "[INFO] Trigger: ${{ github.event_name }}" -ForegroundColor Yellow
+        Write-Host "[INFO] Visibility: PUBLIC" -ForegroundColor Yellow
+        Write-Host "[INFO] Tunnel Provider: BORE" -ForegroundColor Yellow
+        
+    - name: Configure RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "SecurityLayer" -Value 1
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxConnectionTime" -Value 0
+        Restart-Service TermService -Force
+        
+    - name: Create User Account
+      run: |
+        $password = ConvertTo-SecureString "priyansh@123" -AsPlainText -Force
+        New-LocalUser "sinket" -Password $password -FullName "Nexus Admin" -Description "Auto-generated RDP User"
+        Add-LocalGroupMember -Group "Administrators" -Member "sinket"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "sinket"
+        Write-Host "[SUCCESS] User sinket created successfully" -ForegroundColor Green
+        
+    - name: Disable Power Saving
+      run: |
+        powercfg /change monitor-timeout-ac 0
+        powercfg /change standby-timeout-ac 0
+        powercfg /change hibernate-timeout-ac 0
+        
+
+    - name: Establish Bore Tunnel
+      run: |
+        Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip -OutFile bore.zip
+        Expand-Archive bore.zip -DestinationPath .
+        netsh advfirewall firewall add rule name="Allow RDP 3389" dir=in action=allow protocol=TCP localport=3389
+        Write-Host "[INFO] Starting Bore tunnel on port 3389..." -ForegroundColor Yellow
+        Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore.log" -RedirectStandardError "bore.err" -WindowStyle Hidden
+        Start-Sleep -Seconds 7
+        $logContent = Get-Content bore.log
+        Write-Host $logContent
+        $portLine = $logContent | Select-String -Pattern "bore\.pub:(\d+)"
+        if ($portLine) {
+            $port = $portLine.Matches.Groups[1].Value
+            try {
+                $BoreIP = [System.Net.Dns]::GetHostAddresses("bore.pub")[0].IPAddressToString
+            } catch {
+                $BoreIP = "137.184.225.201"
+            }
+            Write-Host "[SUCCESS] Tunnel Established!" -ForegroundColor Green
+            Write-Host "==========================================" -ForegroundColor Cyan
+            Write-Host "RDP Address (USE THIS IP) : $BoreIP:$port" -ForegroundColor Green
+            Write-Host "RDP Address (Domain)      : bore.pub:$port" -ForegroundColor Green
+            Write-Host "Username                  : sinket" -ForegroundColor Cyan
+            Write-Host "Password                  : priyansh@123" -ForegroundColor Cyan
+            Write-Host "==========================================" -ForegroundColor Cyan
+            Write-Host "[CLIENT SETUP] Copy the 'USE THIS IP' address into your Android App. This fixes the 0x104 DNS error!" -ForegroundColor Yellow
+        } else {
+            Write-Host "[ERROR] Could not extract port. Check logs above." -ForegroundColor Red
+            Get-Content bore.err
+        }
+        
+    - name: Keep Alive
+      run: |
+        Write-Host "[INFO] Session active for 6 hours max..." -ForegroundColor Yellow
+        for ($i = 360; $i -gt 0; $i--) {
+            Write-Host "Time remaining: $i minutes" -ForegroundColor Gray
+            Start-Sleep -Seconds 60
+        }
